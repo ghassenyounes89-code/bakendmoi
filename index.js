@@ -43,16 +43,17 @@ db.once("open", () => {
   })
 })
 
-// User Schema
-const userSchema = new mongoose.Schema({
+// Visitor Schema (simplified - only email and name)
+const visitorSchema = new mongoose.Schema({
   name: { type: String, required: true },
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
+  commentCount: { type: Number, default: 0 },
+  lastCommentAt: { type: Date },
   createdAt: { type: Date, default: Date.now },
 })
 
 // Use existing collection name or create new one
-const User = mongoose.model("User", userSchema, "users")
+const Visitor = mongoose.model("Visitor", visitorSchema, "visitors")
 
 // Comment Schema
 const commentSchema = new mongoose.Schema({
@@ -60,7 +61,8 @@ const commentSchema = new mongoose.Schema({
   email: { type: String, required: true },
   message: { type: String, required: true },
   approved: { type: Boolean, default: false },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+  visitorId: { type: mongoose.Schema.Types.ObjectId, ref: "Visitor" },
+  commentNumber: { type: Number, default: 1 }, // Which comment number this is for the visitor
   createdAt: { type: Date, default: Date.now },
 })
 
@@ -85,96 +87,150 @@ const authenticateToken = (req, res, next) => {
   })
 }
 
-// Auth Routes
-app.post("/api/auth/register", async (req, res) => {
+// Visitor Auth Routes
+app.post("/api/visitor/login", async (req, res) => {
   try {
-    const { name, email, password } = req.body
+    const { email, name } = req.body
 
     // Validate input
-    if (!name || !email || !password) {
-      return res.status(400).json({ message: "All fields are required" })
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" })
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email })
-    if (existingUser) {
-      return res.status(400).json({ message: "User already exists" })
-    }
+    // Check if visitor exists
+    let visitor = await Visitor.findOne({ email })
 
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 12)
-
-    // Create user
-    const user = new User({ name, email, password: hashedPassword })
-    await user.save()
-
-    // Generate token
-    const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET || "your-secret-key", {
-      expiresIn: "24h",
-    })
-
-    res.status(201).json({
-      message: "User created successfully",
-      token,
-      user: { id: user._id, name: user.name, email: user.email },
-    })
-  } catch (error) {
-    console.error("Registration error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
-  }
-})
-
-app.post("/api/auth/login", async (req, res) => {
-  try {
-    const { email, password } = req.body
-
-    // Validate input
-    if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" })
-    }
-
-    // Find user
-    const user = await User.findOne({ email })
-    if (!user) {
-      return res.status(400).json({ message: "Invalid credentials" })
-    }
-
-    // Check password
-    const isValidPassword = await bcrypt.compare(password, user.password)
-    if (!isValidPassword) {
-      return res.status(400).json({ message: "Invalid credentials" })
+    if (!visitor) {
+      // Create new visitor if doesn't exist
+      if (!name) {
+        return res.status(400).json({ message: "Name is required for new visitors" })
+      }
+      
+      visitor = new Visitor({ name, email })
+      await visitor.save()
     }
 
     // Generate token
-    const token = jwt.sign({ userId: user._id, email: user.email }, process.env.JWT_SECRET || "your-secret-key", {
-      expiresIn: "24h",
-    })
+    const token = jwt.sign(
+      { 
+        visitorId: visitor._id, 
+        email: visitor.email,
+        name: visitor.name,
+        commentCount: visitor.commentCount 
+      }, 
+      process.env.JWT_SECRET || "your-secret-key", 
+      { expiresIn: "24h" }
+    )
 
     res.json({
-      message: "Login successful",
+      message: "Visitor login successful",
       token,
-      user: { id: user._id, name: user.name, email: user.email },
+      visitor: { 
+        id: visitor._id, 
+        name: visitor.name, 
+        email: visitor.email,
+        commentCount: visitor.commentCount 
+      },
     })
   } catch (error) {
-    console.error("Login error:", error)
+    console.error("Visitor login error:", error)
     res.status(500).json({ message: "Server error", error: error.message })
   }
 })
 
-// Comment Routes
-app.post("/api/comments", async (req, res) => {
+// Update visitor name (if they want to change it)
+app.put("/api/visitor/profile", authenticateToken, async (req, res) => {
   try {
-    const { name, email, message } = req.body
+    const { name } = req.body
 
-    // Validate input
-    if (!name || !email || !message) {
-      return res.status(400).json({ message: "All fields are required" })
+    if (!name) {
+      return res.status(400).json({ message: "Name is required" })
     }
 
-    const comment = new Comment({ name, email, message, approved: true })
+    const visitor = await Visitor.findByIdAndUpdate(
+      req.user.visitorId, 
+      { name }, 
+      { new: true }
+    )
+
+    if (!visitor) {
+      return res.status(404).json({ message: "Visitor not found" })
+    }
+
+    // Generate new token with updated name
+    const token = jwt.sign(
+      { 
+        visitorId: visitor._id, 
+        email: visitor.email,
+        name: visitor.name,
+        commentCount: visitor.commentCount 
+      }, 
+      process.env.JWT_SECRET || "your-secret-key", 
+      { expiresIn: "24h" }
+    )
+
+    res.json({
+      message: "Profile updated successfully",
+      token,
+      visitor: { 
+        id: visitor._id, 
+        name: visitor.name, 
+        email: visitor.email,
+        commentCount: visitor.commentCount 
+      },
+    })
+  } catch (error) {
+    console.error("Update profile error:", error)
+    res.status(500).json({ message: "Server error", error: error.message })
+  }
+})
+
+// Comment Routes (protected by visitor authentication)
+app.post("/api/comments", authenticateToken, async (req, res) => {
+  try {
+    const { message } = req.body
+
+    // Validate input
+    if (!message) {
+      return res.status(400).json({ message: "Message is required" })
+    }
+
+    // Get visitor data
+    const visitor = await Visitor.findById(req.user.visitorId)
+    if (!visitor) {
+      return res.status(404).json({ message: "Visitor not found" })
+    }
+
+    // Increment comment count
+    const newCommentCount = visitor.commentCount + 1
+
+    // Create comment with comment number
+    const comment = new Comment({ 
+      name: visitor.name, 
+      email: visitor.email, 
+      message, 
+      approved: true,
+      visitorId: visitor._id,
+      commentNumber: newCommentCount
+    })
     await comment.save()
 
-    res.status(201).json({ message: "Comment submitted successfully" })
+    // Update visitor's comment count and last comment date
+    visitor.commentCount = newCommentCount
+    visitor.lastCommentAt = new Date()
+    await visitor.save()
+
+    res.status(201).json({ 
+      message: "Comment submitted successfully",
+      commentNumber: newCommentCount,
+      comment: {
+        id: comment._id,
+        name: comment.name,
+        message: comment.message,
+        commentNumber: comment.commentNumber,
+        createdAt: comment.createdAt
+      }
+    })
   } catch (error) {
     console.error("Comment submission error:", error)
     res.status(500).json({ message: "Server error", error: error.message })
@@ -184,7 +240,11 @@ app.post("/api/comments", async (req, res) => {
 app.get("/api/comments", async (req, res) => {
   try {
     // Get only approved comments, sorted by date
-    const comments = await Comment.find({ approved: true }).sort({ createdAt: -1 }).limit(20)
+    const comments = await Comment.find({ approved: true })
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .select('name message commentNumber createdAt')
+    
     res.json(comments)
   } catch (error) {
     console.error("Fetch comments error:", error)
@@ -192,10 +252,27 @@ app.get("/api/comments", async (req, res) => {
   }
 })
 
+// Get visitor's own comments
+app.get("/api/comments/my-comments", authenticateToken, async (req, res) => {
+  try {
+    const comments = await Comment.find({ visitorId: req.user.visitorId })
+      .sort({ createdAt: -1 })
+      .select('name message commentNumber createdAt approved')
+    
+    res.json(comments)
+  } catch (error) {
+    console.error("Fetch my comments error:", error)
+    res.status(500).json({ message: "Server error", error: error.message })
+  }
+})
+
 // Admin routes (protected)
 app.get("/api/comments/admin", authenticateToken, async (req, res) => {
   try {
-    const comments = await Comment.find().sort({ createdAt: -1 })
+    const comments = await Comment.find()
+      .sort({ createdAt: -1 })
+      .populate('visitorId', 'name email commentCount')
+    
     res.json(comments)
   } catch (error) {
     console.error("Admin fetch comments error:", error)
@@ -205,7 +282,11 @@ app.get("/api/comments/admin", authenticateToken, async (req, res) => {
 
 app.put("/api/comments/:id/approve", authenticateToken, async (req, res) => {
   try {
-    const comment = await Comment.findByIdAndUpdate(req.params.id, { approved: true }, { new: true })
+    const comment = await Comment.findByIdAndUpdate(
+      req.params.id, 
+      { approved: true }, 
+      { new: true }
+    )
 
     if (!comment) {
       return res.status(404).json({ message: "Comment not found" })
@@ -218,6 +299,28 @@ app.put("/api/comments/:id/approve", authenticateToken, async (req, res) => {
   }
 })
 
+// Get visitor profile
+app.get("/api/visitor/profile", authenticateToken, async (req, res) => {
+  try {
+    const visitor = await Visitor.findById(req.user.visitorId)
+    if (!visitor) {
+      return res.status(404).json({ message: "Visitor not found" })
+    }
+    
+    res.json({
+      id: visitor._id,
+      name: visitor.name,
+      email: visitor.email,
+      commentCount: visitor.commentCount,
+      lastCommentAt: visitor.lastCommentAt,
+      createdAt: visitor.createdAt
+    })
+  } catch (error) {
+    console.error("Get visitor profile error:", error)
+    res.status(500).json({ message: "Server error", error: error.message })
+  }
+})
+
 // Health check endpoint
 app.get("/api/health", (req, res) => {
   res.json({
@@ -225,20 +328,6 @@ app.get("/api/health", (req, res) => {
     database: mongoose.connection.readyState === 1 ? "Connected" : "Disconnected",
     timestamp: new Date().toISOString(),
   })
-})
-
-// Get user profile (protected)
-app.get("/api/user/profile", authenticateToken, async (req, res) => {
-  try {
-    const user = await User.findById(req.user.userId).select("-password")
-    if (!user) {
-      return res.status(404).json({ message: "User not found" })
-    }
-    res.json(user)
-  } catch (error) {
-    console.error("Get user profile error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
-  }
 })
 
 const PORT = process.env.PORT || 5000
