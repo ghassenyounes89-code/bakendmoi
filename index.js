@@ -32,10 +32,7 @@ const generateToken = (visitor) => {
 // MongoDB Connection
 console.log("Connecting to MongoDB at:", MONGODB_URI)
 
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
+mongoose.connect(MONGODB_URI);
 
 const db = mongoose.connection
 db.on("error", console.error.bind(console, "MongoDB connection error:"))
