@@ -7,7 +7,15 @@ require("dotenv").config()
 const app = express()
 
 // Middleware
-app.use(cors())
+const corsOptions = {
+  origin: ["http://localhost:3000", "http://192.168.1.12:3000"], 
+  methods: ["GET", "POST", "PUT", "DELETE"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true,
+}
+
+app.use(cors(corsOptions))
+
 app.use(express.json())
 
 // Config & Helpers
@@ -335,7 +343,9 @@ app.get("/api/health", (req, res) => {
 })
 
 const PORT = process.env.PORT || 5000
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`)
-  console.log(`Health check available at: http://localhost:${PORT}/api/health`)
+const HOST = "0.0.0.0" // 
+
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`)
+  console.log(`Health check available at: http://${HOST}:${PORT}/api/health`)
 })
